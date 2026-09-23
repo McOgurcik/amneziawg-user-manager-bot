@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.env
+bot.env
+*.sqlite3
+*.db
+*.conf
+*.zip
+data/
+outputs/
