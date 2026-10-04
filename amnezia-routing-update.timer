@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily AmneziaVPN RU split-routing profile update
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+Persistent=true
+RandomizedDelaySec=20m
+
+[Install]
+WantedBy=timers.target

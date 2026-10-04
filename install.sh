@@ -54,11 +54,11 @@ download_source_file() {
     | python3 -c 'import base64, json, sys; sys.stdout.buffer.write(base64.b64decode(json.load(sys.stdin)["content"]))' \
     > "$destination"
 }
-for source_file in Dockerfile Dockerfile.awg requirements.txt bot.py; do
+for source_file in Dockerfile Dockerfile.awg requirements.txt bot.py routing-update.sh amnezia-routing-update.service amnezia-routing-update.timer; do
   download_source_file "$source_file" "$INSTALL_DIR/$source_file"
 done
 
-install -d -m 700 /opt/amnezia/awg /opt/amnezia-bot/data
+install -d -m 700 /opt/amnezia/awg /opt/amnezia-bot/data /opt/amnezia-bot/routing
 printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-amneziawg.conf
 sysctl --system >/dev/null
 
@@ -115,6 +115,10 @@ iptables -A OUTPUT -o awg0 -j ACCEPT
 iptables -A FORWARD -i awg0 -o eth0 -s $AWG_SUBNET/$AWG_CIDR -j ACCEPT
 iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -t nat -A POSTROUTING -s $AWG_SUBNET/$AWG_CIDR -o eth0 -j MASQUERADE
+if [ -s /opt/amnezia/awg/ru-ipset.restore ]; then
+  ipset restore -exist < /opt/amnezia/awg/ru-ipset.restore
+  iptables -C FORWARD -i awg0 -m set --match-set ru_ipv4 dst -j REJECT 2>/dev/null || iptables -I FORWARD 1 -i awg0 -m set --match-set ru_ipv4 dst -j REJECT
+fi
 tail -f /dev/null
 EOF
 chmod 700 "$INSTALL_DIR/awg-start.sh"
@@ -128,6 +132,7 @@ SERVER_HOST=$SERVER_HOST
 AWG_CONTAINER=$AWG_CONTAINER
 AWG_CONFIG=/awg/awg0.conf
 SERVER_BACKUP_DIR=/server-backup
+ROUTING_DIR=/routing
 EOF
 chmod 600 /opt/amnezia-bot/bot.env
 
@@ -137,9 +142,17 @@ docker run -d --name "$BOT_CONTAINER" --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /opt/amnezia/awg:/awg:rw \
   -v /opt/amnezia-bot/data:/data \
+  -v /opt/amnezia-bot/routing:/routing:ro \
   -v /opt/amnezia-bot/bot.env:/server-backup/bot.env:ro \
   -v "$INSTALL_DIR":/server-backup/app:ro \
   "$BOT_CONTAINER:latest"
+
+install -m 700 "$INSTALL_DIR/routing-update.sh" /usr/local/sbin/amnezia-routing-update
+install -m 644 "$INSTALL_DIR/amnezia-routing-update.service" /etc/systemd/system/amnezia-routing-update.service
+install -m 644 "$INSTALL_DIR/amnezia-routing-update.timer" /etc/systemd/system/amnezia-routing-update.timer
+systemctl daemon-reload
+systemctl enable --now amnezia-routing-update.timer
+systemctl start amnezia-routing-update.service
 
 if command -v ufw >/dev/null && ufw status | grep -q 'Status: active'; then
   ufw allow "$AWG_PORT/udp"

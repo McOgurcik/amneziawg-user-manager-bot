@@ -2,7 +2,7 @@ FROM amneziavpn/amneziawg-go:latest
 
 LABEL maintainer="AmneziaVPN"
 
-RUN apk add --no-cache bash dumb-init iptables
+RUN apk add --no-cache bash dumb-init iptables ipset
 RUN mkdir -p /opt/amnezia
 RUN printf '#!/bin/bash\ntail -f /dev/null\n' > /opt/amnezia/start.sh && chmod 700 /opt/amnezia/start.sh
 

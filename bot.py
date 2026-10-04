@@ -24,6 +24,7 @@ AWG_CONTAINER = os.getenv("AWG_CONTAINER", "amnezia-awg2")
 AWG_CONFIG = Path(os.getenv("AWG_CONFIG", "/awg/awg0.conf"))
 SERVER_HOST = os.getenv("SERVER_HOST", "VPN_SERVER_IP")
 SERVER_BACKUP_DIR = Path(os.getenv("SERVER_BACKUP_DIR", "/server-backup"))
+ROUTING_DIR = Path(os.getenv("ROUTING_DIR", "/routing"))
 CONFIG_LOCK = asyncio.Lock()
 
 
@@ -83,7 +84,7 @@ def owner_only(update: Update) -> bool:
 
 def menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [["➕ Создать конфиг", "👥 Пользователи"], ["ℹ️ Помощь"]],
+        [["➕ Создать конфиг", "👥 Пользователи"], ["🇷🇺 RU напрямую", "ℹ️ Помощь"]],
         resize_keyboard=True,
     )
 
@@ -231,6 +232,36 @@ async def send_profile(message, user: sqlite3.Row, caption: str = "") -> None:
     qr_buffer.name = f"{user['name']}_QR.png"
     await message.reply_document(InputFile(document), caption=caption or f"Конфиг: {user['name']}")
     await message.reply_photo(InputFile(qr_buffer), caption="QR-код этого конфига")
+    await send_routing_profiles(message, include_all=False)
+
+
+async def send_routing_profiles(message, include_all: bool = True) -> None:
+    """Send current RU-bypass profiles maintained by the server-side updater."""
+    profiles = [("amnezia.json", "Российские сервисы напрямую: импортируйте как «НЕ использовать VPN».")]
+    if include_all:
+        profiles.extend([
+            ("amnezia-ip-lite.json", "Облегчённый IPv4-профиль для Android/iOS."),
+            ("amnezia-ip.json", "Полный IPv4-профиль для desktop; не используйте на телефонах."),
+        ])
+    sent = 0
+    for filename, caption in profiles:
+        path = ROUTING_DIR / filename
+        if not path.is_file():
+            continue
+        with path.open("rb") as profile:
+            await message.reply_document(InputFile(profile, filename=filename), caption=caption)
+        sent += 1
+    if not sent:
+        await message.reply_text("Профили раздельного туннелирования ещё загружаются. Повторите /routing через минуту.")
+
+
+async def routing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not owner_only(update):
+        return
+    await update.effective_message.reply_text(
+        "Профили обновляются на сервере ежедневно. Импорт: AmneziaVPN → Раздельное туннелирование сайтов → «НЕ использовать VPN»."
+    )
+    await send_routing_profiles(update.effective_message, include_all=True)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -462,6 +493,7 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "- bot/data/: SQLite user database\n"
             "- bot/app/: bot source used on the server\n"
             "- bot/bot.env: bot token and deployment settings\n\n"
+            "- routing/: current RU-bypass profiles for AmneziaVPN split tunneling\n\n"
             "Keep this archive encrypted and private. Anyone with it can access the VPN server and bot.\n",
         )
         for user in users:
@@ -486,6 +518,12 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 bundle.writestr(destination, path.read_bytes())
             else:
                 missing.append(destination)
+        for filename in ("amnezia.json", "amnezia-ip-lite.json", "amnezia-ip.json"):
+            path = ROUTING_DIR / filename
+            if path.is_file():
+                bundle.writestr(f"routing/{filename}", path.read_bytes())
+            else:
+                missing.append(f"routing/{filename}")
         if missing:
             bundle.writestr("MISSING-FILES.txt", "\n".join(missing) + "\n")
     archive.seek(0)
@@ -493,6 +531,39 @@ async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_document(
         InputFile(archive),
         caption=f"Полная резервная копия: {len(users)} конфигов, серверные ключи и данные бота. Храните архив в защищённом месте.",
+    )
+
+
+async def reissue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the admin a client-only reissue bundle; never include server secrets."""
+    if not owner_only(update):
+        return
+    with db() as conn:
+        users = conn.execute("SELECT * FROM users WHERE active = 1 ORDER BY id").fetchall()
+    if not users:
+        await update.effective_message.reply_text("Нет активных пользователей для переиздания.")
+        return
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr(
+            "README.txt",
+            "Client-only AmneziaWG reissue bundle.\n\n"
+            "Each .conf points to the current server endpoint. Import routing/amnezia.json in AmneziaVPN as "
+            "'addresses from the list should NOT use VPN'. Android/iOS should use amnezia-ip-lite.json; desktop can use amnezia-ip.json.\n"
+            "This archive intentionally contains no server private keys, bot token, or database.\n",
+        )
+        for user in users:
+            safe_name = re.sub(r"[^A-Za-zА-Яа-я0-9._-]+", "_", user["name"]).strip("._") or f"user_{user['id']}"
+            bundle.writestr(f"configs/{user['id']:03d}_{safe_name}_{user['ip']}.conf", client_config(user))
+        for filename in ("amnezia.json", "amnezia-ip-lite.json", "amnezia-ip.json"):
+            path = ROUTING_DIR / filename
+            if path.is_file():
+                bundle.writestr(f"routing/{filename}", path.read_bytes())
+    archive.seek(0)
+    archive.name = f"amneziawg-clients-{SERVER_HOST}.zip"
+    await update.effective_message.reply_document(
+        InputFile(archive),
+        caption=f"Переиздано: {len(users)} клиентских конфигов и актуальные RU-профили. Внутри нет серверных ключей и токена.",
     )
 
 
@@ -516,8 +587,10 @@ async def text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await create_prompt(update, context)
     elif value == "👥 Пользователи":
         await show_users(update, context)
+    elif value == "🇷🇺 RU напрямую":
+        await routing(update, context)
     elif value == "ℹ️ Помощь":
-        await update.effective_message.reply_text("Создавайте пользователей кнопкой. Для точного срока: /limit ID 30d или /limit ID 2026-12-31. Для бессрочного доступа: /unlimit ID. Резервная копия: /backup. Кнопка +30 дней продлевает текущий срок.")
+        await update.effective_message.reply_text("Создавайте пользователей кнопкой. Для срока: /limit ID 30d или /limit ID 2026-12-31. Для бессрочного доступа: /unlimit ID. Полный backup: /backup. Клиентский пакет: /reissue. Профили RU: /routing.")
 
 
 async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -541,6 +614,8 @@ def main() -> None:
     app.add_handler(CommandHandler("limit", limit))
     app.add_handler(CommandHandler("unlimit", unlimit))
     app.add_handler(CommandHandler("backup", backup))
+    app.add_handler(CommandHandler("reissue", reissue))
+    app.add_handler(CommandHandler("routing", routing))
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input))
     app.add_error_handler(error_handler)
