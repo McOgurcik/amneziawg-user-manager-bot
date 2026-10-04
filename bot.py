@@ -68,6 +68,7 @@ def init_db() -> None:
                 psk TEXT NOT NULL,
                 active INTEGER NOT NULL DEFAULT 1,
                 expires_at TEXT,
+                profile_type TEXT NOT NULL DEFAULT 'phone',
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS shares (
@@ -79,6 +80,9 @@ def init_db() -> None:
             );
             """
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "profile_type" not in columns:
+            conn.execute("ALTER TABLE users ADD COLUMN profile_type TEXT NOT NULL DEFAULT 'phone'")
 
 
 def owner_only(update: Update) -> bool:
@@ -177,9 +181,10 @@ def client_config(user: sqlite3.Row) -> str:
     return "\n".join(lines)
 
 
-def routing_sites() -> list[str]:
-    """Return mobile-safe RU IPv4 exclusions for an embedded Amnezia profile."""
-    path = ROUTING_DIR / "amnezia-ip-lite.json"
+def routing_sites(profile_type: str) -> list[str]:
+    """Return the RU IPv4 exclusions appropriate for the chosen device type."""
+    filename = "amnezia-ip.json" if profile_type == "desktop" else "amnezia-ip-lite.json"
+    path = ROUTING_DIR / filename
     if not path.is_file():
         return []
     try:
@@ -204,7 +209,7 @@ def vpn_payload(user: sqlite3.Row) -> tuple[str, bytes]:
         "persistent_keep_alive": "25-35",
         # Amnezia RouteMode::VpnAllExceptSites.
         "splitTunnelType": 2,
-        "splitTunnelSites": routing_sites(),
+        "splitTunnelSites": routing_sites(user["profile_type"]),
     }
     profile = {
         "format_version": 1,
@@ -300,11 +305,15 @@ async def send_profile(message, user: sqlite3.Row, caption: str = "") -> None:
     profile.name = f"{basename}.vpn"
     await message.reply_document(
         InputFile(profile),
-        caption=(caption or f"Профиль AmneziaWG: {user['name']}") + "\nRU-сайты уже идут напрямую.",
+        caption=(caption or f"Профиль AmneziaWG: {user['name']}")
+        + ("\nТип: компьютер. Встроен полный RU IPv4-список." if user["profile_type"] == "desktop" else "\nТип: телефон. Встроен компактный RU IPv4-список."),
     )
     frames = vpn_qr_frames(compressed)
-    for index, frame in enumerate(frames, start=1):
-        await message.reply_photo(InputFile(frame), caption=f"QR профиля {index}/{len(frames)}")
+    if len(frames) <= 12:
+        for index, frame in enumerate(frames, start=1):
+            await message.reply_photo(InputFile(frame), caption=f"QR профиля {index}/{len(frames)}")
+    else:
+        await message.reply_text("Полный компьютерный профиль слишком велик для удобной QR-последовательности; импортируйте приложенный .vpn-файл.")
     document = io.BytesIO(content.encode())
     document.name = f"{basename}.conf"
     await message.reply_document(InputFile(document), caption="Запасной .conf без встроенного раздельного туннелирования.")
@@ -368,7 +377,7 @@ async def create_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.effective_message.reply_text("Введите имя нового пользователя (например, Иван или iPhone).")
 
 
-async def create_user(update: Update, context: ContextTypes.DEFAULT_TYPE, name: str) -> None:
+async def create_user(update: Update, context: ContextTypes.DEFAULT_TYPE, name: str, profile_type: str) -> None:
     name = name.strip()[:64]
     if not name:
         await update.effective_message.reply_text("Имя не должно быть пустым.")
@@ -380,8 +389,8 @@ async def create_user(update: Update, context: ContextTypes.DEFAULT_TYPE, name: 
         public = await asyncio.to_thread(pubkey, private)
         psk = await asyncio.to_thread(genpsk)
         cur = conn.execute(
-            "INSERT INTO users(name, ip, client_private, client_public, psk, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (name, address, private, public, psk, iso(now() + timedelta(days=30)), iso(now())),
+            "INSERT INTO users(name, ip, client_private, client_public, psk, expires_at, profile_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, address, private, public, psk, iso(now() + timedelta(days=30)), profile_type, iso(now())),
         )
         user_id = cur.lastrowid
         user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -390,7 +399,8 @@ async def create_user(update: Update, context: ContextTypes.DEFAULT_TYPE, name: 
     with db() as conn:
         conn.execute("INSERT INTO shares(token, user_id, expires_at) VALUES (?, ?, ?)", (token, user_id, iso(now() + timedelta(days=7))))
     link = f"https://t.me/{(await context.bot.get_me()).username}?start=cfg_{token}"
-    await update.effective_message.reply_text(f"Пользователь «{name}» создан. Одноразовая ссылка (действует 7 дней):\n{link}")
+    device = "компьютер" if profile_type == "desktop" else "телефон"
+    await update.effective_message.reply_text(f"Пользователь «{name}» создан ({device}). Срок по умолчанию — 30 дней. Одноразовая ссылка (действует 7 дней):\n{link}")
     await send_profile(update.effective_message, user)
 
 
@@ -425,7 +435,8 @@ async def show_user(query, user_id: int) -> None:
     expiry = parse_iso(user["expires_at"])
     status = "активен" if user["active"] and (not expiry or expiry > now()) else "отключён"
     until = expiry.astimezone().strftime("%d.%m.%Y %H:%M") if expiry else "без ограничения"
-    text = f"{user['name']}\nID: {user['id']}\nIP: {user['ip']}\nСтатус: {status}\nСрок: {until}"
+    device = "компьютер" if user["profile_type"] == "desktop" else "телефон"
+    text = f"{user['name']}\nID: {user['id']}\nIP: {user['ip']}\nТип: {device}\nСтатус: {status}\nСрок: {until}"
     actions = [
         [InlineKeyboardButton("📥 Конфиг", callback_data=f"config:{user_id}"), InlineKeyboardButton("🔗 Новая ссылка", callback_data=f"link:{user_id}")],
         [InlineKeyboardButton("⏱ +30 дней", callback_data=f"extend:{user_id}"), InlineKeyboardButton("✏️ Переименовать", callback_data=f"rename:{user_id}")],
@@ -442,6 +453,16 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     action, value = query.data.split(":", 1)
     if action == "noop":
+        return
+    if action == "createprofile":
+        waiting = context.user_data.get("waiting", "")
+        if value not in {"desktop", "phone"} or not waiting.startswith("create_type:"):
+            await query.edit_message_text("Выбор типа устарел. Создайте пользователя заново.")
+            return
+        name = waiting.split(":", 1)[1]
+        context.user_data.pop("waiting", None)
+        await query.edit_message_text(f"Тип выбран: {'компьютер' if value == 'desktop' else 'телефон'}.")
+        await create_user(update, context, name, value)
         return
     if action == "userspage":
         page = int(value)
@@ -650,7 +671,21 @@ async def text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     waiting = context.user_data.pop("waiting", None)
     value = update.effective_message.text
     if waiting == "create":
-        await create_user(update, context, value)
+        name = value.strip()[:64]
+        if not name:
+            await update.effective_message.reply_text("Имя не должно быть пустым.")
+            return
+        context.user_data["waiting"] = f"create_type:{name}"
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🖥 Компьютер", callback_data="createprofile:desktop"),
+            InlineKeyboardButton("📱 Телефон", callback_data="createprofile:phone"),
+        ]])
+        await update.effective_message.reply_text(
+            "Выберите тип профиля:\n"
+            "• Компьютер — полный RU IPv4-список.\n"
+            "• Телефон — компактный список, чтобы соединение стабильно запускалось.",
+            reply_markup=keyboard,
+        )
     elif waiting and waiting.startswith("rename:"):
         name = value.strip()[:64]
         if not name:
