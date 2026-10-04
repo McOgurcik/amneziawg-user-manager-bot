@@ -309,15 +309,14 @@ async def send_profile(message, user: sqlite3.Row, caption: str = "") -> None:
         caption=(caption or f"Профиль AmneziaWG: {user['name']}")
         + ("\nТип: компьютер. Встроен полный RU IPv4-список." if user["profile_type"] == "desktop" else "\nТип: телефон. Встроен компактный RU IPv4-список."),
     )
-    frames = vpn_qr_frames(compressed)
-    if len(frames) <= 12:
-        for index, frame in enumerate(frames, start=1):
-            await message.reply_photo(InputFile(frame), caption=f"QR профиля {index}/{len(frames)}")
-    else:
-        await message.reply_text("Полный компьютерный профиль слишком велик для удобной QR-последовательности; импортируйте приложенный .vpn-файл.")
     document = io.BytesIO(content.encode())
     document.name = f"{basename}.conf"
-    await message.reply_document(InputFile(document), caption="Запасной .conf без встроенного раздельного туннелирования.")
+    await message.reply_document(InputFile(document), caption="Совместимый .conf без встроенного раздельного туннелирования.")
+    qr_buffer = io.BytesIO()
+    qrcode.make(content).save(qr_buffer, format="PNG")
+    qr_buffer.seek(0)
+    qr_buffer.name = f"{basename}_conf_QR.png"
+    await message.reply_photo(InputFile(qr_buffer), caption="QR-код .conf-файла")
 
 
 async def send_routing_profiles(message, include_all: bool = True) -> None:

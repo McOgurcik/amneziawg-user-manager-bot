@@ -43,7 +43,7 @@ python3 -c 'import base64,json;open("/tmp/install-vpn.sh","wb").write(base64.b64
 sudo env BOT_TOKEN='token-from-botfather' ADMIN_ID='your-numeric-telegram-id' SERVER_HOST='your-server-ip' bash /tmp/install-vpn.sh
 ```
 
-Optional values: `AWG_PORT` (defaults to UDP `443`), `AWG_SUBNET` (defaults to `10.8.1.0`), and `INSTALL_DIR`. UDP and TCP may use port `443` simultaneously, so this does not conflict with SSH on TCP `443`.
+Optional values: `AWG_PORT` (defaults to UDP `443`), `AWG_SUBNET` (defaults to `10.8.1.0`), and `INSTALL_DIR`. UDP and TCP may use port `443` simultaneously, so this does not conflict with SSH on TCP `443`. `SOURCE_DIR` is intended for an offline/local-source bootstrap and is not needed for normal installs.
 
 The installer refuses to overwrite existing `amnezia-awg2` or `amnezia-user-bot` containers.
 

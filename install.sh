@@ -5,6 +5,7 @@ set -Eeuo pipefail
 GITHUB_API_BASE="${GITHUB_API_BASE:-https://api.github.com/repos/McOgurcik/amneziawg-user-manager-bot/contents}"
 GITHUB_REF="${GITHUB_REF:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/amnezia-user-manager-bot-src}"
+SOURCE_DIR="${SOURCE_DIR:-}"
 AWG_PORT="${AWG_PORT:-443}"
 AWG_SUBNET="${AWG_SUBNET:-10.8.1.0}"
 AWG_CIDR="${AWG_CIDR:-24}"
@@ -55,7 +56,12 @@ download_source_file() {
     > "$destination"
 }
 for source_file in Dockerfile Dockerfile.awg requirements.txt bot.py routing-update.sh amnezia-routing-update.service amnezia-routing-update.timer; do
-  download_source_file "$source_file" "$INSTALL_DIR/$source_file"
+  if [[ -n "$SOURCE_DIR" ]]; then
+    [[ -f "$SOURCE_DIR/$source_file" ]] || { echo "Missing source file: $SOURCE_DIR/$source_file" >&2; exit 2; }
+    install -m 600 "$SOURCE_DIR/$source_file" "$INSTALL_DIR/$source_file"
+  else
+    download_source_file "$source_file" "$INSTALL_DIR/$source_file"
+  fi
 done
 
 install -d -m 700 /opt/amnezia/awg /opt/amnezia-bot/data /opt/amnezia-bot/routing
