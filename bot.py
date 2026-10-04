@@ -1,12 +1,15 @@
 import asyncio
 import base64
 import io
+import json
 import os
 import re
 import secrets
 import shlex
 import sqlite3
+import struct
 import zipfile
+import zlib
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -174,6 +177,73 @@ def client_config(user: sqlite3.Row) -> str:
     return "\n".join(lines)
 
 
+def routing_sites() -> list[str]:
+    """Return mobile-safe RU IPv4 exclusions for an embedded Amnezia profile."""
+    path = ROUTING_DIR / "amnezia-ip-lite.json"
+    if not path.is_file():
+        return []
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [entry["hostname"] for entry in entries if isinstance(entry, dict) and isinstance(entry.get("hostname"), str)]
+
+
+def vpn_payload(user: sqlite3.Row) -> tuple[str, bytes]:
+    """Create an Amnezia .vpn profile with Russian IPv4 ranges bypassing the VPN."""
+    native = {
+        "config": client_config(user),
+        "hostName": SERVER_HOST,
+        "port": 585,
+        "client_ip": user["ip"],
+        "client_priv_key": user["client_private"],
+        "client_pub_key": user["client_public"],
+        "server_pub_key": server_public_key(),
+        "psk_key": user["psk"],
+        "allowed_ips": ["0.0.0.0/0", "::/0"],
+        "persistent_keep_alive": "25-35",
+        # Amnezia RouteMode::VpnAllExceptSites.
+        "splitTunnelType": 2,
+        "splitTunnelSites": routing_sites(),
+    }
+    profile = {
+        "format_version": 1,
+        "description": f"{user['name']} · AmneziaWG",
+        "hostName": SERVER_HOST,
+        "dns1": "1.1.1.1",
+        "dns2": "1.0.0.1",
+        "containers": [{"container": "amnezia-awg2", "awg": {"last_config": json.dumps(native, separators=(",", ":"))}}],
+        "defaultContainer": "amnezia-awg2",
+    }
+    raw = json.dumps(profile, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    # Qt qCompress: four-byte big-endian uncompressed size, then zlib stream.
+    compressed = struct.pack(">I", len(raw)) + zlib.compress(raw, level=8)
+    encoded = base64.urlsafe_b64encode(compressed).rstrip(b"=").decode("ascii")
+    return f"vpn://{encoded}", compressed
+
+
+def vpn_qr_frames(compressed: bytes) -> list[io.BytesIO]:
+    """Encode the official Amnezia multi-frame QR transport (850 bytes/frame)."""
+    chunk_size = 850
+    count = (len(compressed) + chunk_size - 1) // chunk_size
+    if not 1 <= count <= 255:
+        raise RuntimeError("Профиль слишком велик для QR-кода")
+    frames: list[io.BytesIO] = []
+    for index in range(count):
+        chunk = compressed[index * chunk_size:(index + 1) * chunk_size]
+        transport = struct.pack(">hBB", 1984, count, index) + chunk
+        text = base64.urlsafe_b64encode(transport).rstrip(b"=").decode("ascii")
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=8, border=4)
+        qr.add_data(text)
+        qr.make(fit=True)
+        frame = io.BytesIO()
+        qr.make_image(fill_color="black", back_color="white").save(frame, format="PNG")
+        frame.seek(0)
+        frame.name = f"amnezia-qr-{index + 1}-of-{count}.png"
+        frames.append(frame)
+    return frames
+
+
 def render_server_config(users: list[sqlite3.Row]) -> None:
     interface, _ = config_sections()
     server_order = [
@@ -224,15 +294,20 @@ def user_label(row: sqlite3.Row) -> str:
 
 async def send_profile(message, user: sqlite3.Row, caption: str = "") -> None:
     content = client_config(user)
+    vpn_uri, compressed = vpn_payload(user)
+    basename = user["name"].replace(" ", "_") or "amneziawg"
+    profile = io.BytesIO(vpn_uri.encode("ascii"))
+    profile.name = f"{basename}.vpn"
+    await message.reply_document(
+        InputFile(profile),
+        caption=(caption or f"Профиль AmneziaWG: {user['name']}") + "\nRU-сайты уже идут напрямую.",
+    )
+    frames = vpn_qr_frames(compressed)
+    for index, frame in enumerate(frames, start=1):
+        await message.reply_photo(InputFile(frame), caption=f"QR профиля {index}/{len(frames)}")
     document = io.BytesIO(content.encode())
-    document.name = f"{user['name'].replace(' ', '_') or 'amneziawg'}.conf"
-    qr_buffer = io.BytesIO()
-    qrcode.make(content).save(qr_buffer, format="PNG")
-    qr_buffer.seek(0)
-    qr_buffer.name = f"{user['name']}_QR.png"
-    await message.reply_document(InputFile(document), caption=caption or f"Конфиг: {user['name']}")
-    await message.reply_photo(InputFile(qr_buffer), caption="QR-код этого конфига")
-    await send_routing_profiles(message, include_all=False)
+    document.name = f"{basename}.conf"
+    await message.reply_document(InputFile(document), caption="Запасной .conf без встроенного раздельного туннелирования.")
 
 
 async def send_routing_profiles(message, include_all: bool = True) -> None:
@@ -548,12 +623,14 @@ async def reissue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         bundle.writestr(
             "README.txt",
             "Client-only AmneziaWG reissue bundle.\n\n"
-            "Each .conf points to the current server endpoint. Import routing/amnezia.json in AmneziaVPN as "
-            "'addresses from the list should NOT use VPN'. Android/iOS should use amnezia-ip-lite.json; desktop can use amnezia-ip.json.\n"
+            "Each .vpn points to the current server endpoint and already embeds the mobile-safe RU IPv4 bypass list. "
+            "Import .vpn in AmneziaVPN. The accompanying .conf files are compatibility fallbacks without embedded split tunneling.\n"
             "This archive intentionally contains no server private keys, bot token, or database.\n",
         )
         for user in users:
             safe_name = re.sub(r"[^A-Za-zА-Яа-я0-9._-]+", "_", user["name"]).strip("._") or f"user_{user['id']}"
+            vpn_uri, _ = vpn_payload(user)
+            bundle.writestr(f"configs/{user['id']:03d}_{safe_name}_{user['ip']}.vpn", vpn_uri)
             bundle.writestr(f"configs/{user['id']:03d}_{safe_name}_{user['ip']}.conf", client_config(user))
         for filename in ("amnezia.json", "amnezia-ip-lite.json", "amnezia-ip.json"):
             path = ROUTING_DIR / filename
@@ -563,7 +640,7 @@ async def reissue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     archive.name = f"amneziawg-clients-{SERVER_HOST}.zip"
     await update.effective_message.reply_document(
         InputFile(archive),
-        caption=f"Переиздано: {len(users)} клиентских конфигов и актуальные RU-профили. Внутри нет серверных ключей и токена.",
+        caption=f"Переиздано: {len(users)} .vpn-профилей со встроенным RU-обходом и совместимых .conf. Внутри нет серверных ключей и токена.",
     )
 
 
