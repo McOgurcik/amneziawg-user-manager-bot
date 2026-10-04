@@ -2,9 +2,11 @@ import asyncio
 import base64
 import io
 import os
+import re
 import secrets
 import shlex
 import sqlite3
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +23,7 @@ DB_PATH = DATA_DIR / "bot.sqlite3"
 AWG_CONTAINER = os.getenv("AWG_CONTAINER", "amnezia-awg2")
 AWG_CONFIG = Path(os.getenv("AWG_CONFIG", "/awg/awg0.conf"))
 SERVER_HOST = os.getenv("SERVER_HOST", "VPN_SERVER_IP")
+SERVER_BACKUP_DIR = Path(os.getenv("SERVER_BACKUP_DIR", "/server-backup"))
 CONFIG_LOCK = asyncio.Lock()
 
 
@@ -439,6 +442,60 @@ async def unlimit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text("Срок снят: доступ включён бессрочно.")
 
 
+async def backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the administrator a full private VPN and bot recovery archive."""
+    if not owner_only(update):
+        return
+    with db() as conn:
+        users = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+    if not users:
+        await update.effective_message.reply_text("В резервной копии пока нет пользователей.")
+        return
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr(
+            "README-RESTORE.txt",
+            "Private AmneziaWG server backup.\n\n"
+            "Contents:\n"
+            "- awg/: server configuration and keys\n"
+            "- bot/data/: SQLite user database\n"
+            "- bot/app/: bot source used on the server\n"
+            "- bot/bot.env: bot token and deployment settings\n\n"
+            "Keep this archive encrypted and private. Anyone with it can access the VPN server and bot.\n",
+        )
+        for user in users:
+            safe_name = re.sub(r"[^A-Za-zА-Яа-я0-9._-]+", "_", user["name"]).strip("._") or f"user_{user['id']}"
+            filename = f"{user['id']:03d}_{safe_name}_{user['ip']}.conf"
+            bundle.writestr(filename, client_config(user))
+        protected_files = {
+            "/awg/awg0.conf": "awg/awg0.conf",
+            "/awg/wireguard_server_private_key.key": "awg/wireguard_server_private_key.key",
+            "/awg/wireguard_server_public_key.key": "awg/wireguard_server_public_key.key",
+            "/awg/wireguard_psk.key": "awg/wireguard_psk.key",
+            "/data/bot.sqlite3": "bot/data/bot.sqlite3",
+            str(SERVER_BACKUP_DIR / "bot.env"): "bot/bot.env",
+            str(SERVER_BACKUP_DIR / "app" / "bot.py"): "bot/app/bot.py",
+            str(SERVER_BACKUP_DIR / "app" / "Dockerfile"): "bot/app/Dockerfile",
+            str(SERVER_BACKUP_DIR / "app" / "requirements.txt"): "bot/app/requirements.txt",
+        }
+        missing = []
+        for source, destination in protected_files.items():
+            path = Path(source)
+            if path.is_file():
+                bundle.writestr(destination, path.read_bytes())
+            else:
+                missing.append(destination)
+        if missing:
+            bundle.writestr("MISSING-FILES.txt", "\n".join(missing) + "\n")
+    archive.seek(0)
+    archive.name = f"amneziawg-backup-{SERVER_HOST}.zip"
+    await update.effective_message.reply_document(
+        InputFile(archive),
+        caption=f"Полная резервная копия: {len(users)} конфигов, серверные ключи и данные бота. Храните архив в защищённом месте.",
+    )
+
+
 async def text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not owner_only(update):
         return
@@ -460,7 +517,7 @@ async def text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     elif value == "👥 Пользователи":
         await show_users(update, context)
     elif value == "ℹ️ Помощь":
-        await update.effective_message.reply_text("Создавайте пользователей кнопкой. Для точного срока: /limit ID 30d или /limit ID 2026-12-31. Для бессрочного доступа: /unlimit ID. Кнопка +30 дней продлевает текущий срок.")
+        await update.effective_message.reply_text("Создавайте пользователей кнопкой. Для точного срока: /limit ID 30d или /limit ID 2026-12-31. Для бессрочного доступа: /unlimit ID. Резервная копия: /backup. Кнопка +30 дней продлевает текущий срок.")
 
 
 async def expire_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -483,6 +540,7 @@ def main() -> None:
     app.add_handler(CommandHandler("users", show_users))
     app.add_handler(CommandHandler("limit", limit))
     app.add_handler(CommandHandler("unlimit", unlimit))
+    app.add_handler(CommandHandler("backup", backup))
     app.add_handler(CallbackQueryHandler(callbacks))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input))
     app.add_error_handler(error_handler)

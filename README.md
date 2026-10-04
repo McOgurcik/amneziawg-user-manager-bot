@@ -33,6 +33,19 @@ It creates AmneziaWG configuration files, QR codes, and one-time delivery links.
 
 The directory mounted at `/data` contains the private user database and must be protected accordingly.
 
+## Fresh-server one-command installer
+
+For a new Ubuntu server, the public installer deploys Docker, AmneziaWG 3.1, and the bot. It generates new VPN server keys; use the bot to create users afterwards.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/McOgurcik/amneziawg-user-manager-bot/main/install.sh | \
+  sudo env BOT_TOKEN='token-from-botfather' ADMIN_ID='your-numeric-telegram-id' SERVER_HOST='your-server-ip' bash
+```
+
+Optional values: `AWG_PORT` (defaults to `585`), `AWG_SUBNET` (defaults to `10.8.1.0`), and `INSTALL_DIR`.
+
+The installer refuses to overwrite existing `amnezia-awg2` or `amnezia-user-bot` containers.
+
 ## Commands
 
 - `/start` — admin panel
@@ -40,6 +53,7 @@ The directory mounted at `/data` contains the private user database and must be 
 - `/limit ID_OR_IP_OR_NAME 30d` — grant time-limited access
 - `/limit ID_OR_IP_OR_NAME 2026-12-31` — set an explicit expiry date
 - `/unlimit ID_OR_IP_OR_NAME` — make access unlimited
+- `/backup` — send the administrator a ZIP archive of client profiles, AmneziaWG server keys/configuration, and bot recovery data. Treat this archive as highly sensitive.
 
 The button interface also supports user creation, configuration re-issue, one-time links, QR generation, renaming, disabling, enabling, deletion, and 30-day extensions.
 
