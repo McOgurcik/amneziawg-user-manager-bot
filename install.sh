@@ -2,7 +2,7 @@
 # Installs a fresh AmneziaWG 3.1 server and the Telegram user-manager bot.
 set -Eeuo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/McOgurcik/amneziawg-user-manager-bot.git}"
+SOURCE_BASE="${SOURCE_BASE:-https://cdn.jsdelivr.net/gh/McOgurcik/amneziawg-user-manager-bot@main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/amnezia-user-manager-bot-src}"
 AWG_PORT="${AWG_PORT:-585}"
 AWG_SUBNET="${AWG_SUBNET:-10.8.1.0}"
@@ -31,7 +31,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl git docker.io
+apt-get install -y --no-install-recommends ca-certificates curl docker.io
 systemctl enable --now docker
 
 if docker inspect "$AWG_CONTAINER" >/dev/null 2>&1 || docker inspect "$BOT_CONTAINER" >/dev/null 2>&1; then
@@ -43,13 +43,11 @@ if ss -lunH | grep -Eq ":$AWG_PORT([[:space:]]|$)"; then
   exit 3
 fi
 
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-  git -C "$INSTALL_DIR" fetch --depth 1 origin main
-  git -C "$INSTALL_DIR" reset --hard origin/main
-else
-  rm -rf "$INSTALL_DIR"
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
-fi
+rm -rf "$INSTALL_DIR"
+install -d -m 700 "$INSTALL_DIR"
+for source_file in Dockerfile Dockerfile.awg requirements.txt bot.py; do
+  curl --fail --location --proto '=https' --retry 3 "$SOURCE_BASE/$source_file" -o "$INSTALL_DIR/$source_file"
+done
 
 install -d -m 700 /opt/amnezia/awg /opt/amnezia-bot/data
 printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/99-amneziawg.conf
