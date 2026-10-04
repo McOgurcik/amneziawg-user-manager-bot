@@ -38,8 +38,9 @@ The directory mounted at `/data` contains the private user database and must be 
 For a new Ubuntu server, the public installer deploys Docker, AmneziaWG 3.1, and the bot. It generates new VPN server keys; use the bot to create users afterwards.
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/McOgurcik/amneziawg-user-manager-bot@main/install.sh | \
-  sudo env BOT_TOKEN='token-from-botfather' ADMIN_ID='your-numeric-telegram-id' SERVER_HOST='your-server-ip' bash
+curl -fsSL 'https://api.github.com/repos/McOgurcik/amneziawg-user-manager-bot/contents/install.sh?ref=main' -o /tmp/install-vpn.json
+python3 -c 'import base64,json;open("/tmp/install-vpn.sh","wb").write(base64.b64decode(json.load(open("/tmp/install-vpn.json"))["content"]))'
+sudo env BOT_TOKEN='token-from-botfather' ADMIN_ID='your-numeric-telegram-id' SERVER_HOST='your-server-ip' bash /tmp/install-vpn.sh
 ```
 
 Optional values: `AWG_PORT` (defaults to `585`), `AWG_SUBNET` (defaults to `10.8.1.0`), and `INSTALL_DIR`.

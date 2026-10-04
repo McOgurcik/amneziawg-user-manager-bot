@@ -2,7 +2,8 @@
 # Installs a fresh AmneziaWG 3.1 server and the Telegram user-manager bot.
 set -Eeuo pipefail
 
-SOURCE_BASE="${SOURCE_BASE:-https://cdn.jsdelivr.net/gh/McOgurcik/amneziawg-user-manager-bot@main}"
+GITHUB_API_BASE="${GITHUB_API_BASE:-https://api.github.com/repos/McOgurcik/amneziawg-user-manager-bot/contents}"
+GITHUB_REF="${GITHUB_REF:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/amnezia-user-manager-bot-src}"
 AWG_PORT="${AWG_PORT:-585}"
 AWG_SUBNET="${AWG_SUBNET:-10.8.1.0}"
@@ -31,7 +32,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl docker.io
+apt-get install -y --no-install-recommends ca-certificates curl docker.io python3
 systemctl enable --now docker
 
 if docker inspect "$AWG_CONTAINER" >/dev/null 2>&1 || docker inspect "$BOT_CONTAINER" >/dev/null 2>&1; then
@@ -45,8 +46,16 @@ fi
 
 rm -rf "$INSTALL_DIR"
 install -d -m 700 "$INSTALL_DIR"
+download_source_file() {
+  local source_file="$1"
+  local destination="$2"
+  curl --fail --location --proto '=https' --retry 3 \
+    "$GITHUB_API_BASE/$source_file?ref=$GITHUB_REF" \
+    | python3 -c 'import base64, json, sys; sys.stdout.buffer.write(base64.b64decode(json.load(sys.stdin)["content"]))' \
+    > "$destination"
+}
 for source_file in Dockerfile Dockerfile.awg requirements.txt bot.py; do
-  curl --fail --location --proto '=https' --retry 3 "$SOURCE_BASE/$source_file" -o "$INSTALL_DIR/$source_file"
+  download_source_file "$source_file" "$INSTALL_DIR/$source_file"
 done
 
 install -d -m 700 /opt/amnezia/awg /opt/amnezia-bot/data
