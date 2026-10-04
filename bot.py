@@ -26,6 +26,7 @@ DB_PATH = DATA_DIR / "bot.sqlite3"
 AWG_CONTAINER = os.getenv("AWG_CONTAINER", "amnezia-awg2")
 AWG_CONFIG = Path(os.getenv("AWG_CONFIG", "/awg/awg0.conf"))
 SERVER_HOST = os.getenv("SERVER_HOST", "VPN_SERVER_IP")
+AWG_PORT = int(os.getenv("AWG_PORT", "585"))
 SERVER_BACKUP_DIR = Path(os.getenv("SERVER_BACKUP_DIR", "/server-backup"))
 ROUTING_DIR = Path(os.getenv("ROUTING_DIR", "/routing"))
 CONFIG_LOCK = asyncio.Lock()
@@ -176,7 +177,7 @@ def client_config(user: sqlite3.Row) -> str:
     lines.extend([
         "I1 = <r 2><b 0x858000010001000000000669636c6f756403636f6d0000010001c00c000100010000105a00044d583737>",
         "", "[Peer]", f"PublicKey = {server_key}", f"PresharedKey = {user['psk']}",
-        "AllowedIPs = 0.0.0.0/0, ::/0", f"Endpoint = {SERVER_HOST}:585", "PersistentKeepalive = 25-35", "",
+        "AllowedIPs = 0.0.0.0/0, ::/0", f"Endpoint = {SERVER_HOST}:{AWG_PORT}", "PersistentKeepalive = 25-35", "",
     ])
     return "\n".join(lines)
 
@@ -199,7 +200,7 @@ def vpn_payload(user: sqlite3.Row) -> tuple[str, bytes]:
     native = {
         "config": client_config(user),
         "hostName": SERVER_HOST,
-        "port": 585,
+        "port": AWG_PORT,
         "client_ip": user["ip"],
         "client_priv_key": user["client_private"],
         "client_pub_key": user["client_public"],

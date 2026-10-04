@@ -5,7 +5,7 @@ set -Eeuo pipefail
 GITHUB_API_BASE="${GITHUB_API_BASE:-https://api.github.com/repos/McOgurcik/amneziawg-user-manager-bot/contents}"
 GITHUB_REF="${GITHUB_REF:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/amnezia-user-manager-bot-src}"
-AWG_PORT="${AWG_PORT:-585}"
+AWG_PORT="${AWG_PORT:-443}"
 AWG_SUBNET="${AWG_SUBNET:-10.8.1.0}"
 AWG_CIDR="${AWG_CIDR:-24}"
 AWG_CONTAINER="amnezia-awg2"
@@ -129,6 +129,7 @@ cat > /opt/amnezia-bot/bot.env <<EOF
 BOT_TOKEN=$BOT_TOKEN
 ADMIN_ID=$ADMIN_ID
 SERVER_HOST=$SERVER_HOST
+AWG_PORT=$AWG_PORT
 AWG_CONTAINER=$AWG_CONTAINER
 AWG_CONFIG=/awg/awg0.conf
 SERVER_BACKUP_DIR=/server-backup
